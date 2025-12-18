@@ -19,8 +19,11 @@
 
 // TODO: Generally improve this library's frontend interface and portability.
 // TODO: Better encapsulate result data and improve how it gets formatted.
-// TODO: Improve easyprof's ability to record/display micro/nano-second measurements.
+// TODO: Maybe when reporting results, have it also detail easyprof overhead time.
 // TODO: Decide upon how, and then impl, multi-threading support.
+// TOOD: Maybe create a 'EASYPROF_SPECIAL' macro which lets end-user define a section
+//       of code as a profiled pseudo-function, w/ the end-user providing an arbitrary
+//       string name literal to use in place of a real funcsig.
 
 
 // TODO: I'm not sure what platforms (ie. Windows, Mac, Linux) __PRETTY_FUNCTION__
@@ -93,14 +96,26 @@ namespace easyprof {
     using Results = std::vector<Result>;
 
     inline std::string fmt(const Results& results) {
+        auto fmtCalls = [](size_t n) -> std::string {
+            if (n >= 10'000'000'000)    return std::format("{}B", (n - n % 1000'000'000) / 1000'000'000);
+            else if (n >= 10'000'000)   return std::format("{}M", (n - n % 1000'000) / 1000'000);
+            else if (n >= 10'000)       return std::format("{}K", (n - n % 1000) / 1000);
+            else                        return std::format("{}", n);
+            };
+        auto fmtSecs = [](Seconds s) -> std::string {
+            if (s < 0.000'001)  return std::format("{}ns", (float)(s * 1'000'000'000.0)); // nano
+            else if (s < 0.001) return std::format("{}us", (float)(s * 1'000'000.0)); // micro
+            else if (s < 1.0)   return std::format("{}ms", (float)(s * 1'000.0)); // milli
+            else                return std::format("{}s", (float)s);
+            };
         std::string output{};
         output += std::format("Profiler Results ({} fns):", results.size());
         output += std::format("\ncalls        internal     cumulative   funcsig:line:file");
         for (const Result& result : results) {
             output += std::format("\n{: <12} {: <12} {: <12} {}:{}:{}",
-                result.calls,
-                std::format("{}s", (float)result.internal),
-                std::format("{}s", (float)result.cumulative),
+                fmtCalls(result.calls),
+                fmtSecs(result.internal),
+                fmtSecs(result.cumulative),
                 (std::string)result.function,
                 result.line,
                 std::filesystem::proximate((std::string)result.file).string());

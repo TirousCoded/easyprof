@@ -8,7 +8,9 @@
 template<typename... Args>
 inline void println(std::format_string<Args...> fmt, Args&&... args) {
 	EASYPROF;
-	easyprof::println(fmt, std::forward<Args>(args)...);
+	// NOTE: Disabling actual printing so we can call this a bunch of times w/out polluting the actual output.
+	//easyprof::println(fmt, std::forward<Args>(args)...);
+	(void)std::format(fmt, std::forward<Args>(args)...);
 }
 
 void foo() {
@@ -35,10 +37,12 @@ size_t factorial(size_t n) {
 int32_t main(int32_t argc, char** argv) {
 	easyprof::Profiler prof{};
 	easyprof::start(prof);
-	bar();
-	bar();
-	bar();
-	println("13! == {}", factorial(13));
+	for (size_t i = 0; i < 131'142; i++) {
+		bar();
+		bar();
+		bar();
+		println("13! == {}", factorial(13));
+	}
 	easyprof::stop();
 	easyprof::println("{}", easyprof::fmt(prof.results()));
 	return EXIT_SUCCESS;
