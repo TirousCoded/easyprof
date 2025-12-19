@@ -26,11 +26,13 @@
 //       string name literal to use in place of a real funcsig.
 
 
-// TODO: I'm not sure what platforms (ie. Windows, Mac, Linux) __PRETTY_FUNCTION__
-//		 is used on, and which use __FUNCSIG__, so we'll have to make this code
-//		 more portable later.
-
+#if defined(__GNUC__) || defined(__clang__)
+#define EASYPROF_FUNCSIG __PRETTY_FUNCTION__
+#elif defined(_MSC_VER)
 #define EASYPROF_FUNCSIG __FUNCSIG__
+#else
+#error "Unknown compiler!"
+#endif
 
 
 namespace easyprof {
