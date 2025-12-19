@@ -15,15 +15,14 @@
 #include <unordered_map>
 
 
-// IMPORTANT: This library is currently *unstable*, so expect breaking changes!
-
-// TODO: Generally improve this library's frontend interface and portability.
-// TODO: Better encapsulate result data and improve how it gets formatted.
-// TODO: Maybe when reporting results, have it also detail easyprof overhead time.
+// TODO: Optimize easyprof w/ regards to API processing time overhead.
 // TODO: Decide upon how, and then impl, multi-threading support.
-// TOOD: Maybe create a 'EASYPROF_SPECIAL' macro which lets end-user define a section
-//       of code as a profiled pseudo-function, w/ the end-user providing an arbitrary
-//       string name literal to use in place of a real funcsig.
+
+
+// NOTE: Be sure to keep this updated as we modify the frontend.
+
+// EasyProf API Version (Major/Minor)
+#define EASYPROF_VERSION "EasyProf version 1.0"
 
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -35,18 +34,24 @@
 #endif
 
 
+// Used for unreachable code paths.
+#define EASYPROF_DEADEND (assert(false))
+
+
+namespace easyprof {}
+namespace _easyprof { // Impl detail namespace.
+    using namespace easyprof;
+    class Agent;
+}
+
+
+// Place this at the vary start of each and every function to be profiled.
+// Functions without this won't be acknowledged by the profiler.
+// Undefined behaviour if multiple EASPROF(s) are used, or if it's misplaced.
+#define EASYPROF ::_easyprof::Agent _easyprof_agent(__LINE__, __FILE__, EASYPROF_FUNCSIG)
+
+
 namespace easyprof {
-
-
-    class ProfilerAgent;
-
-
-    // Place this at the vary start of each and every function to be profiled.
-    // Functions without this won't be acknowledged by the profiler.
-    // Undefined behaviour if multiple EASPROF(s) are used, or if it's misplaced.
-#define EASYPROF ::easyprof::ProfilerAgent _easyprof_agent(__LINE__, __FILE__, EASYPROF_FUNCSIG)
-
-
     template<typename... Args>
     inline void print(std::format_string<Args...> fmt, Args&&... args) {
         std::cout << std::format(fmt, std::forward<Args>(args)...);
@@ -60,9 +65,29 @@ namespace easyprof {
     }
 
 
-    // NOTE: Stole this timer impl from TheCherno's Hazel Engine.
+    inline std::string fmtBigInt(size_t n) {
+        auto fmtHelper = [](size_t n, size_t scale, char suffix) -> std::string {
+            auto integerPart = n / scale;
+            auto decimalPart = (n % scale) / (scale / 10);
+            return std::format("{}.{}{}", integerPart, decimalPart, suffix);
+            };
+        if (n >= 1'000'000'000)     return fmtHelper(n, 1'000'000'000, 'B');
+        else if (n >= 1'000'000)    return fmtHelper(n, 1'000'000, 'M');
+        else if (n >= 1'000)        return fmtHelper(n, 1'000, 'K');
+        else                        return std::format("{}", n);
+    }
 
     using Seconds = double;
+
+    inline std::string fmtSeconds(Seconds s) {
+        if (s < 0.000'001)  return std::format("{}ns", (float)(s * 1'000'000'000.0)); // nano
+        else if (s < 0.001) return std::format("{}us", (float)(s * 1'000'000.0)); // micro
+        else if (s < 1.0)   return std::format("{}ms", (float)(s * 1'000.0)); // milli
+        else                return std::format("{}s", (float)s);
+    }
+
+
+    // NOTE: Stole this timer impl from TheCherno's Hazel Engine.
 
     class Timer final {
     public:
@@ -83,8 +108,45 @@ namespace easyprof {
         std::chrono::time_point<std::chrono::high_resolution_clock> _start = {};
     };
 
+    class Stopwatch final {
+    public:
+        Stopwatch() = default;
 
-    // TODO: Replace below w/ better way to store/format results.
+
+        inline Seconds elapsed() const noexcept {
+            return _elapsed;
+        }
+        inline void start() noexcept {
+            if (_active) {
+                stop();
+            }
+            _active = true;
+            _timer.reset();
+        }
+        inline void stop() noexcept {
+            if (_active) {
+                _elapsed += _timer.elapsed();
+            }
+            _active = false;
+        }
+        inline void reset() noexcept {
+            stop();
+            _elapsed = 0.0;
+        }
+
+
+    private:
+        bool _active = false;
+        Timer _timer;
+        Seconds _elapsed = 0.0;
+    };
+
+
+    enum class SortBy : uint8_t {
+        Internal = 0,   // Sort by internal time.
+        Cumulative,     // Sort by cumulative time.
+        Calls,          // Sort by call count.
+    };
 
     struct Result final {
         size_t              line        = 0;    // Line Number (of agent, not the function itself.)
@@ -93,136 +155,210 @@ namespace easyprof {
         size_t              calls       = 0;    // The number of times the function was called.
         Seconds             internal    = 0.0;  // Total exec time of all calls, minus subprocedure time.
         Seconds             cumulative  = 0.0;	// Total exec time of all calls, including subprocedure time.
-    };
 
-    using Results = std::vector<Result>;
 
-    inline std::string fmt(const Results& results) {
-        auto fmtCalls = [](size_t n) -> std::string {
-            if (n >= 10'000'000'000)    return std::format("{}B", (n - n % 1000'000'000) / 1000'000'000);
-            else if (n >= 10'000'000)   return std::format("{}M", (n - n % 1000'000) / 1000'000);
-            else if (n >= 10'000)       return std::format("{}K", (n - n % 1000) / 1000);
-            else                        return std::format("{}", n);
-            };
-        auto fmtSecs = [](Seconds s) -> std::string {
-            if (s < 0.000'001)  return std::format("{}ns", (float)(s * 1'000'000'000.0)); // nano
-            else if (s < 0.001) return std::format("{}us", (float)(s * 1'000'000.0)); // micro
-            else if (s < 1.0)   return std::format("{}ms", (float)(s * 1'000.0)); // milli
-            else                return std::format("{}s", (float)s);
-            };
-        std::string output{};
-        output += std::format("Profiler Results ({} fns):", results.size());
-        output += std::format("\ncalls        internal     cumulative   funcsig:line:file");
-        for (const Result& result : results) {
-            output += std::format("\n{: <12} {: <12} {: <12} {}:{}:{}",
-                fmtCalls(result.calls),
-                fmtSecs(result.internal),
-                fmtSecs(result.cumulative),
-                (std::string)result.function,
-                result.line,
-                std::filesystem::proximate((std::string)result.file).string());
+        inline Seconds internalPerCall() const noexcept { return internal / Seconds(calls); }
+        inline Seconds cumulativePerCall() const noexcept { return cumulative / Seconds(calls); }
+
+        inline std::string name() const {
+            return std::format("{}:{}:{}",
+                std::filesystem::proximate((std::string)file).string(),
+                line,
+                (std::string)function);
         }
-        return output;
-    }
 
-    enum class SortBy : uint8_t {
-        Default = 0,    // Sort by internal time.
-        Cumulative,     // Sort by cumulative time.
-        Calls,          // Sort by call count.
+        inline std::string fmt() const {
+            return std::format("{: <12} {: <12} {: <12} {: <12} {: <12} {}",
+                fmtBigInt(calls),
+                fmtSeconds(internal),
+                fmtSeconds(internalPerCall()),
+                fmtSeconds(cumulative),
+                fmtSeconds(cumulativePerCall()),
+                name());
+        }
     };
+}
 
-    class Profiler final {
+template<>
+struct std::formatter<easyprof::Result> final : public std::formatter<std::string> {
+    auto format(const easyprof::Result& x, format_context& ctx) const {
+        return formatter<string>::format(x.fmt(), ctx);
+    }
+};
+namespace std {
+    inline std::ostream& operator<<(std::ostream& stream, const easyprof::Result& x) {
+        return stream << x.fmt();
+    }
+}
+
+namespace easyprof {
+    class Results final {
     public:
-        Profiler() = default;
+        using Iterator = std::vector<Result>::const_iterator;
 
 
-        // Returns the profiling results.
-        // Undefined behaviour if this is called while the profiler is still running.
-        inline Results results(SortBy sortBy = SortBy::Default) {
-            Results output{};
-            for (const auto& [funcsig, result] : _results) {
-                output.push_back(result);
-            }
+        inline Results(Seconds apiOverhead = 0.0) noexcept :
+            _apiOverhead(apiOverhead) {}
+
+        Results(const Results&) = default;
+        Results(Results&&) noexcept = default;
+        ~Results() noexcept = default;
+        Results& operator=(const Results&) = default;
+        Results& operator=(Results&&) noexcept = default;
+
+
+        // Returns the total number of function calls recorded.
+        inline size_t calls() const noexcept { return _totalCalls; }
+
+        inline Iterator cbegin() const noexcept { return _results.begin(); }
+        inline Iterator begin() const noexcept { return cbegin(); }
+        inline Iterator cend() const noexcept { return _results.end(); }
+        inline Iterator end() const noexcept { return cend(); }
+
+        inline size_t size() const noexcept { return _results.size(); }
+
+        inline const Result& at(size_t index) const { return _results.at(index); }
+        inline const Result& operator[](size_t index) const noexcept { return _results[index]; }
+
+
+        inline void add(Result result) {
+            _results.push_back(result);
+            _totalCalls += result.calls;
+        }
+
+        // Predicate is the same as the predicate of std::sort.
+        template<typename Predicate>
+        inline void sort(const Predicate& predicate) {
+            std::sort(_results.begin(), _results.end(), predicate);
+        }
+        inline void sort(SortBy sortBy) {
+            auto internalPred = [](const Result& a, const Result& b) -> bool { return a.internal > b.internal; };
+            auto cumulativePred = [](const Result& a, const Result& b) -> bool { return a.cumulative > b.cumulative; };
+            auto callsPred = [](const Result& a, const Result& b) -> bool { return a.calls > b.calls; };
             switch (sortBy) {
-            case SortBy::Default:
-            {
-                std::sort(output.begin(), output.end(),
-                    [](const Result& a, const Result& b) -> bool {
-                        return a.internal > b.internal;
-                    });
+            case SortBy::Internal:      sort(internalPred);     break;
+            case SortBy::Cumulative:    sort(cumulativePred);   break;
+            case SortBy::Calls:         sort(callsPred);        break;
+            default:                    EASYPROF_DEADEND;       break;
             }
-            break;
-            case SortBy::Cumulative:
-            {
-                std::sort(output.begin(), output.end(),
-                    [](const Result& a, const Result& b) -> bool {
-                        return a.cumulative > b.cumulative;
-                    });
-            }
-            break;
-            case SortBy::Calls:
-            {
-                std::sort(output.begin(), output.end(),
-                    [](const Result& a, const Result& b) -> bool {
-                        return a.calls > b.calls;
-                    });
-            }
-            break;
-            default: assert(false); break;
+        }
+
+        inline std::string fmt() const {
+            std::string output{};
+            output += std::format("EasyProf Results (fns: {}, calls: {}, API overhead: {})",
+                size(), fmtBigInt(calls()), fmtSeconds(_apiOverhead));
+            // Each of the words below (calls, internal, per-call, etc.), plus the whitespace ahead of it,
+            // should take up 13 characters.
+            output += std::format("\ncalls        internal     per-call     cumulative   per-call     file:line:funcsig");
+            for (const auto& result : *this) {
+                output += std::format("\n{}", result);
             }
             return output;
         }
 
 
+    private:
+        std::vector<Result> _results;
+        size_t _totalCalls = 0;
+        Seconds _apiOverhead = 0.0;
+    };
+}
+
+template<>
+struct std::formatter<easyprof::Results> final : public std::formatter<std::string> {
+    auto format(const easyprof::Results& x, format_context& ctx) const {
+        return formatter<string>::format(x.fmt(), ctx);
+    }
+};
+namespace std {
+    inline std::ostream& operator<<(std::ostream& stream, const easyprof::Results& x) {
+        return stream << x.fmt();
+    }
+}
+
+namespace easyprof {
+    class Prof final {
+    public:
+        Prof() = default;
+
+
+        // Returns the profiling results.
+        // Undefined behaviour if this is called while the profiler is still running.
+        inline Results results() {
+            assert(current() != this); // Doesn't cover if *this is current in another thread.
+            Results output(_apiOverhead.elapsed());
+            for (const auto& [funcsig, result] : _results) {
+                output.add(result);
+            }
+            return output;
+        }
+
+        // Resets profiler state.
+        // Undefined behaviour if this is called while the profiler is still running.
+        inline void reset() noexcept {
+            assert(current() != this); // Doesn't cover if *this is current in another thread.
+            _results.clear();
+            _apiOverhead.reset();
+        }
+
+
         // Returns the currently running profiler for this thread, if any.
-        inline static Profiler* current() noexcept {
+        inline static Prof* current() noexcept {
             return _current;
         }
 
 
     private:
-        friend class ProfilerAgent;
-        friend void start(Profiler& profiler) noexcept;
+        friend class _easyprof::Agent;
+        friend void start(Prof& profiler) noexcept;
         friend void stop() noexcept;
 
 
         // Maps function signature to corresponding results.
-        // This is why it's important for ProfilerAgent ctor arg strings to be to memory which will be
+        // This is why it's important for Agent ctor arg strings to be to memory which will be
         // good for the lifetime of the program.
         std::unordered_map<std::string_view, Result> _results;
 
+        // This is used to measure API processing time overhead.
+        Stopwatch _apiOverhead;
 
-        static thread_local Profiler* _current;
+
+        static thread_local Prof* _current;
     };
 
-    inline thread_local Profiler* Profiler::_current = nullptr;
+    inline thread_local Prof* Prof::_current = nullptr;
 
 
     // Start (or resume) a profiler for this thread.
     // Any currently running profiler for this thread will be stopped.
-    inline void start(Profiler& profiler) noexcept {
-        Profiler::_current = &profiler;
+    // Profiling acknowledges functions when they exit, thus functions started prior to start being called may be recorded.
+    inline void start(Prof& profiler) noexcept {
+        Prof::_current = &profiler;
     }
 
     // Stops the profiler running for this thread, if any.
     inline void stop() noexcept {
-        Profiler::_current = nullptr;
+        Prof::_current = nullptr;
     }
+}
 
-
-    class ProfilerAgent final {
+namespace _easyprof {
+    class Agent final {
     public:
         // file and function are expected to be C-strings who's lifetime extends until the
         // end of program execution (ie. they should be in static readonly memory.)
-        inline ProfilerAgent(size_t line, std::string_view file, std::string_view function) :
+        inline Agent(size_t line, std::string_view file, std::string_view function) :
             _line(line),
             _file(file),
             _function(function) {
+            _startTrackAPIOverhead();
             // Make this agent the new top agent.
             _pushAgent(*this);
+            _stopTrackAPIOverhead();
         }
 
-        inline ~ProfilerAgent() noexcept { // RAII
+        inline ~Agent() noexcept { // RAII
+            _startTrackAPIOverhead();
             Seconds finalCumulative = _cumulative.elapsed();
             // Remove this agent from agent stack.
             _popAgent();
@@ -232,7 +368,7 @@ namespace easyprof {
                 _topAgent->_subprocedure += finalCumulative;
             }
             // If there's a running profiler on this thread, write our results to it.
-            if (auto prof = Profiler::current()) {
+            if (auto prof = Prof::current()) {
                 if (auto it = prof->_results.find(_function); it != prof->_results.end()) {
                     it->second.calls++;
                     it->second.internal += finalCumulative - _subprocedure;
@@ -249,6 +385,7 @@ namespace easyprof {
                         });
                 }
             }
+            _stopTrackAPIOverhead();
         }
 
 
@@ -260,15 +397,15 @@ namespace easyprof {
         Timer _cumulative; // Time of procedure and all subprocedures.
         Seconds _subprocedure = 0.0; // Time of subprocedures.
 
-        ProfilerAgent* _below = nullptr; // Agent below this one on the agent stack.
+        Agent* _below = nullptr; // Agent below this one on the agent stack.
 
 
         // easyprof operates by defining a per-thread linked-list-esque stack of agents such
         // that this stack aligns w/ the thread's call stack.
 
-        static thread_local ProfilerAgent* _topAgent; // Top of the agent stack.
+        static thread_local Agent* _topAgent; // Top of the agent stack.
 
-        inline static void _pushAgent(ProfilerAgent& agent) noexcept {
+        inline static void _pushAgent(Agent& agent) noexcept {
             assert(!agent._below);
             agent._below = _topAgent;
             _topAgent = &agent;
@@ -279,8 +416,20 @@ namespace easyprof {
                 agent->_below = nullptr;
             }
         }
+
+
+        inline static void _startTrackAPIOverhead() noexcept {
+            if (Prof::_current) {
+                Prof::_current->_apiOverhead.start();
+            }
+        }
+        inline static void _stopTrackAPIOverhead() noexcept {
+            if (Prof::_current) {
+                Prof::_current->_apiOverhead.stop();
+            }
+        }
     };
 
-    inline thread_local ProfilerAgent* ProfilerAgent::_topAgent = nullptr;
+    inline thread_local Agent* Agent::_topAgent = nullptr;
 }
 

@@ -5,6 +5,8 @@
 #include "easyprof/easyprof.h"
 
 
+// Put 'EASYPROF' at the top of ever fn you wish to have acknowledged by EasyProf.
+
 template<typename... Args>
 inline void println(std::format_string<Args...> fmt, Args&&... args) {
 	EASYPROF;
@@ -35,16 +37,23 @@ size_t factorial(size_t n) {
 
 
 int32_t main(int32_t argc, char** argv) {
-	easyprof::Profiler prof{};
+	easyprof::println("Simulating work. Just give it a bit...");
+
+	// EasyProf is thread-safe in terms of being able to be used concurrently from
+	// multiple threads, but it can't profile multiple threads at once.
+
+	easyprof::Prof prof{};
 	easyprof::start(prof);
-	for (size_t i = 0; i < 131'142; i++) {
+	size_t workload = 31'142; // Arbitrary
+	for (size_t i = 0; i < workload; i++) {
 		bar();
 		bar();
 		bar();
 		println("13! == {}", factorial(13));
 	}
 	easyprof::stop();
-	easyprof::println("{}", easyprof::fmt(prof.results()));
+	easyprof::println("{}", prof.results());
+
 	return EXIT_SUCCESS;
 }
 
